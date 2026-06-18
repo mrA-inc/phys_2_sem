@@ -1,0 +1,318 @@
+{
+  "handoff_version": "2.0",
+  "created": "2026-06-19",
+  "project_name": "droplet-shape-research",
+  "target": "Claude Code",
+
+  "language_conventions": {
+    "article_text": "русский язык, английские термины вводятся один раз при первом упоминании в скобках, далее без скобок",
+    "code_docstrings_and_comments": "русский",
+    "user_communication": "русский, кратко, ведущая мысль вперёд",
+    "decimal_separator_in_article": "запятая (2,73 мм), НЕ точка",
+    "latex_engine": "xelatex (pdflatex НЕ работает — t2aenc.def не установлен)"
+  },
+
+  "project_goal": "Замкнутое исследование равновесной формы капли жидкости с тремя артефактами по приоритету: (1) LaTeX-статья журнального уровня, (2) симуляционный код, (3) CV-обработка снимков. Статья уже готова (версия 2.0). Текущая повестка — расширение симуляционного кода.",
+
+  "article_status": {
+    "file": "article/main.tex",
+    "pdf": "article/main.pdf",
+    "pages": 20,
+    "equations": 37,
+    "figures": 11,
+    "references": 10,
+    "toc_sections": [
+      "1. Введение (физ. контекст, вывод уравнения Юнга, капиллярная длина, гистерезис, гипотезы)",
+      "2. Вариационная постановка (функционал → Эйлер–Лагранж = Юнг–Лаплас, множитель = давление, усл. Юнга = натур. гран. условие)",
+      "3. 2D горизонталь (первый интеграл Бельтрами, профиль, вывод h*=2a sin(θ/2), дуговая форма)",
+      "4. 3D осесимметрия (вывод обеих главных кривизн, уравнение Башфорта–Адамса, объём)",
+      "5. Наклон 2D (вывод Френкеля–Фурмиджа виртуальной работой, симметричная модель, модель двух дуг с выводом Lf)",
+      "6. Наклон 3D (метод двух окружностей, вывод кубики θ(ψ) из 4 гран.условий, Лемма об объёме шапки, интеграл объёма)",
+      "7. CV-сравнение (принцип ADSA, таблица GT↔CV)",
+      "8. Выводы",
+      "Приложение A: качественное описание симуляционного кода",
+      "Приложение B: качественное описание CV-модуля"
+    ],
+    "tikz_schematics": [
+      "Рис.1: геометрия задачи — горизонталь и наклон с углами θY, θA, θR, силами",
+      "Рис.4: баланс сил на наклоне — σcosθR, σcosθA, ρgVsinα",
+      "Рис.9: метод двух окружностей — две дуги r1/r2, вершина H, длины L1/L2"
+    ],
+    "compile_cmd": "cd article && xelatex -interaction=nonstopmode main.tex && xelatex -interaction=nonstopmode main.tex",
+    "note_on_editing": "При правке статьи всегда компилировать ДВАЖДЫ (для оглавления и ссылок). При добавлении рисунков: cp figs/*.pdf article/figs/ сначала."
+  },
+
+  "environment": {
+    "python": "3.12",
+    "packages": {
+      "numpy": "2.4.4",
+      "scipy": "1.17.1",
+      "matplotlib": "3.10.8",
+      "opencv-python": "4.13.0"
+    },
+    "pip_flag": "--break-system-packages",
+    "fonts": "DejaVu Sans/Serif/Mono — есть кириллица, используются в matplotlib и LaTeX",
+    "network_in_bash": "доступны github/pypi/npm/ubuntu; CTAN НЕдоступен — tlmgr install не работает; все нужные LaTeX-пакеты уже установлены",
+    "pdf_preview": "pdftoppm -png -r 90 -f N -l N article/main.pdf /tmp/pg"
+  },
+
+  "directory_structure": {
+    "sim/physics.py":     "физические константы и базовые формулы",
+    "sim/drop_2d.py":     "2D капля на горизонтали (дуговой интегратор, первый интеграл)",
+    "sim/drop_axisym.py": "3D осесимметричная капля (Башфорт–Адамс, объём)",
+    "sim/inclined.py":    "наклонная поверхность (критерий Френкеля–Фурмиджа, кубика, метод двух окружностей, профиль двух дуг)",
+    "sim/figures.py":     "генерация 8 рисунков статьи → figs/",
+    "sim/simulate.py":    "НОВЫЙ ФАЙЛ — параметрическая симуляция с CLI и валидацией (см. ниже)",
+    "sim/render3d.py":    "НОВЫЙ ФАЙЛ — 3D-рендер поверхности капли (см. ниже)",
+    "cv/synthetic.py":    "генератор синтетических снимков из физ.модели",
+    "cv/dropcv.py":       "CV-конвейер: контур, базовая линия, углы, ADSA",
+    "cv/run_cv.py":       "раннер CV — обрабатывает оба снимка и печатает таблицу",
+    "figs/":              "8 рисунков статьи PDF+PNG (генерируются sim/figures.py)",
+    "article/figs/":      "копии рисунков для LaTeX \\includegraphics",
+    "article/main.tex":   "исходник статьи (xelatex)",
+    "article/main.pdf":   "скомпилированный PDF"
+  },
+
+  "existing_sim_files": {
+
+    "sim/physics.py": {
+      "status": "готов",
+      "exports": [
+        "class Fluid(name, rho, sigma, rho_gas=1.20, g=9.80665) → .delta_rho, .capillary_length=√(σ/Δρg), .c=Δρg/σ=1/a², .bond_number(L)",
+        "WATER(a=2.729мм), ETHYLENE_GLYCOL, GLYCERIN, MERCURY",
+        "sphere_cap_volume_from_R(R,θ), sphere_cap_base_radius(R,θ), sphere_cap_height(R,θ)",
+        "sphere_cap_volume_from_base(D,θ) — формула ур.42 ElSherbini"
+      ]
+    },
+
+    "sim/drop_2d.py": {
+      "status": "готов, провалидирован (точное vs дуговое = 0.000%)",
+      "key_functions": [
+        "integrate_arclength(b,c,theta_stop,axisymmetric=False) → DropProfile(s,x,z,phi,theta,b); dphi/ds=b+c*z (2D)",
+        "profile_2d_for_area(theta,area,c) — быстрый подбор b под площадь (один ODE)",
+        "area_2d_arclength(prof) = 2∫x dz",
+        "saturation_height(fluid,theta) = 2a sin(θ/2) — предельная высота лужи",
+        "profile_2d_exact(theta,h,c,n) — точное решение через cos(φ)=-c/2·z²+λz+cosθ (медленный, не в циклах)",
+        "height_for_area_2d — МЕДЛЕННЫЙ (через quad), используй только для справки"
+      ],
+      "note": "DropProfile.apex_height — высота вершины над подложкой; DropProfile.base_radius — полуширина основания"
+    },
+
+    "sim/drop_axisym.py": {
+      "status": "готов, провалидирован (vs сферич. шапка = 0.04%)",
+      "key_functions": [
+        "axisym_profile(b,c,theta) → DropProfile; dphi/ds=2b+c*z-sinφ/x (3D)",
+        "fit_b_for_volume(volume,c,theta) → DropProfile — подбор b под объём (brentq, монотонно)",
+        "drop_volume(prof) = ∫πx²sinφ ds",
+        "equivalent_diameter(V) — диаметр эквивалентной сферы"
+      ]
+    },
+
+    "sim/inclined.py": {
+      "status": "готов, провалидирован",
+      "key_functions": [
+        "sliding_angle_2d(area,θA,θR,fluid) → alpha_c (Френкель 2D)",
+        "max_volume_3d(alpha,θA,θR,fluid,width,k=1) → V_max (Фурмидж 3D)",
+        "hysteresis_symmetric(alpha,V,theta_Y,fluid,w) → (θA,θR,slid) — симметричная модель sinδ=ρgV sinα/(2σw sinθY)",
+        "two_arc_profile_2d(zeta,theta_down,theta_up,n) → (x,y,info) — профиль двух дуг, параметризован по углу (корректен для θ>90°)",
+        "contact_angle_azimuthal(psi,θmax,θmin) → θ(ψ) — кубика ур.(33) статьи",
+        "two_circle_volume(θmax,θmin,L,w,n_phi) — объём 3D-капли на наклоне ур.(36)",
+        "spherical_cap_volume_equal(θmax,θmin,L,w) — объём сферич. шапки для сравнения"
+      ],
+      "important_fix": "two_arc_profile_2d параметризована ПОЛЯРНЫМ УГЛОМ вокруг центра дуги (не по x): оба контакта строго на y=0, нависание θ>90° корректно"
+    },
+
+    "sim/figures.py": {
+      "status": "готов, все 8 рисунков (~10с суммарно)",
+      "generates": [
+        "fig_2d_profiles.pdf — профили 2D-капли при разных площадях",
+        "fig_height_saturation.pdf — насыщение высоты к h* для 3 жидкостей",
+        "fig_axisym_bond.pdf — 3D-профили и отклонение от сферич.шапки (самый медленный ~4.6с)",
+        "fig_angle_distribution.pdf — кубика θ(ψ)",
+        "fig_sphcap_deviation.pdf — ошибка шапки vs гистерезис",
+        "fig_hysteresis_incline.pdf — θA/θR vs наклон, маркеры соскальзывания",
+        "fig_critical_sliding.pdf — α_c vs объём; V_max vs alpha",
+        "fig_inclined_shapes.pdf — формы капли при α=0/20/40/60°"
+      ],
+      "run": "cd sim && python3 figures.py",
+      "after_run": "cp figs/*.pdf article/figs/"
+    }
+  },
+
+  "new_simulation_agenda": {
+
+    "overview": "Пользователь задаёт параметры (объём V и угол наклона α), симуляция проверяет физическую допустимость, строит форму и отрисовывает: вид сбоку (2D), а также полную 3D-поверхность. Если параметры невозможны — выдаёт информативную ошибку с объяснением.",
+
+    "file_1_simulate_py": {
+      "path": "sim/simulate.py",
+      "purpose": "Параметрическая симуляция с CLI и валидацией",
+      "cli_interface": "python3 simulate.py --volume 30 --alpha 35 --theta 100 --fluid water [--width 4] [--3d] [--save fig.pdf]",
+      "api_interface": "from simulate import run_simulation; result = run_simulation(volume_ul, alpha_deg, theta_deg, fluid=WATER)",
+      "return_type": "SimResult(profile_2d, profile_3d_mesh, geometry_dict, warnings_list) или DropError",
+
+      "validation_rules": [
+        {
+          "check": "Соскальзывание: ρgV sinα ≥ σ w (cosθR - cosθA)",
+          "error_message": "DropSlidesError: капля объёмом {V:.1f} мкл соскальзывает при α={α:.1f}° (критический угол α_c={α_c:.1f}°). Уменьшите объём или угол наклона.",
+          "how": "вычислить max_volume_3d(alpha,thA,thR,fluid,w); если V > V_max → ошибка"
+        },
+        {
+          "check": "Нереальный объём (слишком мало/много)",
+          "error_message": "VolumeError: объём {V:.3f} мкл вне диапазона [0.01, 10000] мкл",
+          "bounds": "0.01 мкл ≤ V ≤ 10000 мкл"
+        },
+        {
+          "check": "Нереальный угол наклона",
+          "error_message": "AngleError: угол наклона {α:.1f}° вне диапазона [0, 90]°",
+          "bounds": "0° ≤ α < 90°"
+        },
+        {
+          "check": "Нереальный краевой угол",
+          "error_message": "ContactAngleError: краевой угол {θ:.1f}° вне диапазона (0, 180)°",
+          "bounds": "1° < θ < 179°"
+        },
+        {
+          "check": "Предупреждение (не ошибка): Bo > 5 — гравитация сильно искажает форму",
+          "level": "warning",
+          "message": "Предупреждение: Bo={Bo:.2f} > 5, гравитация существенно искажает форму; приближение двух дуг менее точно"
+        }
+      ],
+
+      "geometry_output_dict": {
+        "volume_ul": "объём, мкл",
+        "alpha_deg": "угол наклона, °",
+        "theta_Y_deg": "равновесный краевой угол, °",
+        "theta_A_deg": "наступающий угол (при наклоне), °",
+        "theta_R_deg": "рецессивный угол (при наклоне), °",
+        "base_width_mm": "ширина основания, мм",
+        "apex_height_mm": "высота вершины, мм",
+        "capillary_length_mm": "капиллярная длина a, мм",
+        "bond_number": "число Бонда Bo",
+        "alpha_c_deg": "критический угол соскальзывания, °",
+        "V_max_ul": "максимальный удерживаемый объём при данном α, мкл"
+      },
+
+      "code_structure": [
+        "class DropSlidesError(ValueError): ...",
+        "class VolumeError(ValueError): ...",
+        "class AngleError(ValueError): ...",
+        "def validate_params(volume_ul, alpha_deg, theta_deg, fluid, width) -> None: ...",
+        "def run_simulation(volume_ul, alpha_deg, theta_deg, fluid, ...) -> SimResult: ...",
+        "def print_summary(result: SimResult): ...",
+        "if __name__ == '__main__': argparse CLI"
+      ]
+    },
+
+    "file_2_render3d_py": {
+      "path": "sim/render3d.py",
+      "purpose": "3D-рендер поверхности капли через matplotlib (surface plot)",
+
+      "horizontal_drop": {
+        "method": "вращение меридионального профиля вокруг вертикальной оси",
+        "steps": [
+          "получить (x,z) из fit_b_for_volume → axisym_profile (это правая ветвь меридиана)",
+          "создать сетку углей phi = linspace(0, 2π, N_phi)",
+          "X[i,j] = x[i] * cos(phi[j]);  Y[i,j] = x[i] * sin(phi[j]);  Z[i,j] = z[i]",
+          "ax.plot_surface(X, Y, Z, ...) — matplotlib Axes3D"
+        ],
+        "coordinate_convention": "z — высота над подложкой (0 у основания, apex_height у вершины)"
+      },
+
+      "inclined_drop": {
+        "method": "метод двух окружностей: для каждого азимута ψ вычислить радиус и угол, построить дугу",
+        "steps": [
+          "получить θA, θR из hysteresis_symmetric(alpha,V,theta_Y,fluid,w)",
+          "для каждого phi в [0, 2π]: вычислить theta(phi) из contact_angle_azimuthal",
+          "для каждого phi: вычислить R_e(phi) — радиус эллипса контактной линии",
+          "для каждого phi: построить дугу окружности с углом theta(phi) и полудлиной R_e(phi) (в плоскости сечения)",
+          "собрать сетку (u=phi, v=arc_param) → (X,Y,Z)",
+          "повернуть всю сетку на угол наклона α вокруг поперечной оси (ось Y)",
+          "ax.plot_surface(X, Y, Z, ...)"
+        ],
+        "note": "Для наклонной капли 3D корректнее визуализировать контур контактной линии отдельно на плоскости подложки"
+      },
+
+      "visualization_options": [
+        "вид сбоку — ax.view_init(elev=5, azim=0)",
+        "вид сверху — ax.view_init(elev=90, azim=0)",
+        "изометрия — ax.view_init(elev=30, azim=45)",
+        "matplotlib colormap по высоте z (coolwarm или Blues)",
+        "отрисовка подложки как полупрозрачной плоскости",
+        "опция: --view side|top|iso"
+      ],
+
+      "function_signatures": [
+        "def surface_axisym(prof: DropProfile, n_phi=120) -> tuple[ndarray,ndarray,ndarray]: ...",
+        "def surface_inclined(alpha,V,theta_Y,fluid,width,n_phi=90,n_arc=60) -> tuple[ndarray,ndarray,ndarray]: ...",
+        "def plot_drop_3d(ax, X, Y, Z, alpha_deg=0.0, cmap='Blues', alpha_surface=0.85): ...",
+        "def render_and_save(result: SimResult, path=None, view='iso'): ..."
+      ]
+    }
+  },
+
+  "build_pipeline": {
+    "step_1_validate": "cd sim && python3 -c \"import physics,drop_2d,drop_axisym,inclined; print('OK')\"",
+    "step_2_figures": "cd sim && python3 figures.py",
+    "step_3_copy_figs": "cp figs/*.pdf article/figs/ && cp cv/out/drop_*_annotated.png article/figs/",
+    "step_4_article": "cd article && xelatex -interaction=nonstopmode main.tex && xelatex -interaction=nonstopmode main.tex",
+    "step_5_cv": "cd cv && python3 run_cv.py",
+    "parametric_sim_example": "cd sim && python3 simulate.py --volume 30 --alpha 35 --theta 100 --fluid water --3d --save /tmp/drop.pdf",
+    "note": "После правки sim/inclined.py или sim/drop_axisym.py — перезапустить figures.py и скопировать рисунки в article/figs/"
+  },
+
+  "physics_reference": {
+    "young_laplace_2d": "dφ/ds = b + c·z",
+    "bashforth_adams_3d": "dφ/ds = 2b + c·z − sinφ/x",
+    "first_integral": "cosφ(z) = cosθY + (λ/σ)·z − (c/2)·z²",
+    "lambda_from_apex": "λ/σ = (1−cosθY)/h + c·h/2",
+    "saturation_height": "h* = 2a·sin(θY/2)",
+    "capillary_length": "a = √(σ / Δρg)",
+    "bond_number": "Bo = ΔρgL²/σ = (L/a)²",
+    "furmidge_sliding": "ρgV·sinα_c = k·w·σ·(cosθR − cosθA), k=1",
+    "symmetric_hysteresis": "sinδ = ρgV·sinα / (2σw·sinθY); θA=θY+δ, θR=θY−δ",
+    "Lf_ratio": "L1/L2 = sinθ1·(1−cosθ2) / [sinθ2·(1−cosθ1)]",
+    "cubic_angle": "cosθ(ψ) = (2D/π³)·ψ³ − (3D/π²)·ψ² + cosθmax,  D = cosθmax − cosθmin",
+    "cap_volume": "V_cap = (π/3)·R³·(2−3cosθ+cos³θ) = πρ³/3·(2−3cosθ+cos³θ)/sin³θ",
+    "adsa": "σ = Δρg / c_fitted"
+  },
+
+  "validated_numbers": {
+    "exact_2d_vs_arclength": "0.000% расхождения по площади",
+    "axisym_vs_sphere_cap_no_gravity": "0.04%",
+    "two_circle_degenerate_vs_cap": "0.000% при всех θ включая >90°",
+    "cv_contact_angle_error": "<2° до θ≈115°, ~4° при 130°",
+    "cv_adsa_sigma": "72.8 мН/м точно (вода)",
+    "cv_alpha_detection": "точно (35° → 35.0°)"
+  },
+
+  "references_used_in_article": [
+    "[Young1805]   T. Young, Phil. Trans. 95 (1805) 65 — уравнение Юнга",
+    "[Laplace1806] P.S. Laplace, 1806 — уравнение давления на поверхности",
+    "[BashforthAdams1883] — дуговая параметризация",
+    "[Frenkel1948] Я.И. Френкель, ЖЭТФ 18 (1948) 659 — условие удержания",
+    "[Furmidge1962] C.G.L. Furmidge, J. Colloid Sci. 17 (1962) 309 — критерий соскальзывания",
+    "[Rotenberg1983] Y. Rotenberg et al., J. Colloid Interface Sci. 93 (1983) 169 — ADSA",
+    "[ElSherbini2004] A.I. ElSherbini, A.M. Jacobi, J. Colloid Interface Sci. 273 (2004) 566 — метод двух окружностей, кубика",
+    "[deGennes2004] P.-G. de Gennes et al., Capillarity and Wetting Phenomena, Springer 2004",
+    "[Lv2017] C. Lv et al., J. Fluid Mech. (2017); arXiv:1705.03548 — точные 2D-решения",
+    "[Matyukhin2013] С.А. Матюхин, К.Г. Фроленков, КСМ 15 (2013) 292 — вариационный вывод, h*"
+  ],
+
+  "known_limitations": [
+    "Аппроксимация двух дуг для наклонной капли не учитывает пиннинг контактной линии; для точной формы нужно интегрировать Юнг–Лаплас на наклоне с переменным граничным условием.",
+    "Кубическое распределение угла — геометрическая интерполяция, не решение уравнения Юнга–Лапласа.",
+    "Симметричная модель гистерезиса sinδ=... предполагает симметричное отклонение от θY; реальное распределение может быть асимметричным.",
+    "CV-аппроксимация окружностью для краевого угла теряет точность при θ>130° (нужен полный ADSA для угла).",
+    "3D-рендер inclined_drop строится из двух окружностей, а не из точного решения Юнга–Лапласа на наклоне."
+  ],
+
+  "onboarding_checklist": [
+    "1. Прочитать этот файл и INSTRUCTIONS.md полностью.",
+    "2. Запустить: cd sim && python3 -c 'import physics,drop_2d,drop_axisym,inclined; print(\"sim OK\")'",
+    "3. Запустить: cd cv && python3 -c 'import synthetic,dropcv; print(\"cv OK\")'",
+    "4. Запустить: cd sim && python3 simulate.py --help  (после создания файла)",
+    "5. При любых правках физики — перезапустить figures.py и обновить article/figs/.",
+    "6. Статью компилировать ДВАЖДЫ через xelatex.",
+    "7. Отвечать пользователю кратко, на русском, ведущая мысль вперёд."
+  ]
+}
