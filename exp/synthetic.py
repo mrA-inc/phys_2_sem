@@ -25,43 +25,61 @@ def _meridian_axisym(fluid: Fluid, volume: float, theta: float):
     return x, z, prof
 
 
+THETA_DEFAULT_DEG = 72.8   # краевой угол воды на стекле по умолчанию
+
+
 def render_drop(volume=40e-9, theta_deg=110.0, alpha_deg=0.0,
                 fluid: Fluid = WATER, px_per_mm=60.0,
                 img_w=900, img_h=650, noise=6.0, blur=2.0,
-                inclined_hysteresis=True, seed=0):
+                inclined_hysteresis=True, seed=0,
+                hysteresis_deg=15.0):
     """
-    Рендер снимка капли. Для alpha>0 используется профиль из двух дуг
-    (нижний/верхний краевые углы из симметричной модели гистерезиса).
+    Рендер снимка капли с реалистичной асимметрией краевых углов.
+    theta_deg=0 → используется THETA_DEFAULT_DEG (краевой угол воды ~72.8°).
+    hysteresis_deg — полуширина гистерезиса для горизонтальной капли (θ_L ≠ θ_R).
     Возвращает (image_bgr, ground_truth_dict).
     """
     rng = np.random.default_rng(seed)
+
+    # theta=0 -> дефолтный краевой угол
+    if theta_deg == 0.0:
+        theta_deg = THETA_DEFAULT_DEG
+
     a = np.deg2rad(alpha_deg)
     theta = np.deg2rad(theta_deg)
 
     if alpha_deg <= 1e-6:
+        # горизонталь: осесимметричный профиль + случайная асимметрия θ_L ≠ θ_R
         x, z, prof = _meridian_axisym(fluid, volume, theta)
-        xs = np.concatenate([-x[::-1], x])
-        zs = np.concatenate([z[::-1], z])
-        gt = dict(theta_left=theta_deg, theta_right=theta_deg,
-                  base_width_mm=2*prof.base_radius*1e3,
-                  apex_height_mm=prof.apex_height*1e3,
-                  alpha_deg=0.0, volume_ul=volume*1e9,
-                  sigma=fluid.sigma, capillary_length_mm=fluid.capillary_length*1e3)
+        # случайное смещение краевых углов (гистерезис поверхности)
+        dtheta = rng.uniform(-hysteresis_deg * 0.5, hysteresis_deg * 0.5)
+        thL_deg = theta_deg - abs(dtheta)
+        thR_deg = theta_deg + abs(dtheta)
+        thL = np.deg2rad(thL_deg)
+        thR = np.deg2rad(thR_deg)
+        # перестраиваем профиль как две дуги с разными углами
+        zeta = prof.base_radius * 1.0
+        xs, zs, info = two_arc_profile_2d(zeta, thR, thL, n=240)
+        gt = dict(theta_left=thL_deg, theta_right=thR_deg,
+                  base_width_mm=(info['L1'] + info['L2']) * 1e3,
+                  apex_height_mm=info['H'] * 1e3,
+                  alpha_deg=0.0, volume_ul=volume * 1e9,
+                  sigma=fluid.sigma, capillary_length_mm=fluid.capillary_length * 1e3)
     else:
-        w = 2.0 * (3*volume/(2*np.pi))**(1/3)
+        w = 2.0 * (3 * volume / (2 * np.pi)) ** (1 / 3)
         if inclined_hysteresis:
             thA, thR, slid = hysteresis_symmetric(a, volume, theta, fluid, w)
             if slid or thA is None:
                 thA, thR = theta + np.deg2rad(20), theta - np.deg2rad(20)
         else:
             thA, thR = theta, theta
-        zeta = w/2 * 1.1
+        zeta = w / 2 * 1.1
         xs, zs, info = two_arc_profile_2d(zeta, thA, thR, n=240)
         gt = dict(theta_left=np.rad2deg(thR), theta_right=np.rad2deg(thA),
-                  base_width_mm=(info['L1']+info['L2'])*1e3,
-                  apex_height_mm=info['H']*1e3,
-                  alpha_deg=alpha_deg, volume_ul=volume*1e9,
-                  sigma=fluid.sigma, capillary_length_mm=fluid.capillary_length*1e3)
+                  base_width_mm=(info['L1'] + info['L2']) * 1e3,
+                  apex_height_mm=info['H'] * 1e3,
+                  alpha_deg=alpha_deg, volume_ul=volume * 1e9,
+                  sigma=fluid.sigma, capillary_length_mm=fluid.capillary_length * 1e3)
 
     # поворот профиля на угол наклона (downhill — вправо)
     ca, sa = np.cos(-a), np.sin(-a)
@@ -102,12 +120,13 @@ def render_drop(volume=40e-9, theta_deg=110.0, alpha_deg=0.0,
 
 
 if __name__ == "__main__":
-    os.makedirs("/home/claude/droplet/cv/out", exist_ok=True)
+    OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "exp", "out")
+    os.makedirs(OUT, exist_ok=True)
     for name, kw in [("drop_horizontal", dict(alpha_deg=0.0, volume=40e-9, theta_deg=115.0)),
                      ("drop_inclined", dict(alpha_deg=35.0, volume=30e-9, theta_deg=100.0))]:
         img, gt = render_drop(**kw)
-        path = f"/home/claude/droplet/cv/out/{name}.png"
-        cv2.imwrite(path, img)
+        path = os.path.join(OUT, f"{name}.png")
+        cv2.imencode(".png", img)[1].tofile(path)
         print(f"{name}: {img.shape}, GT theta L/R = "
               f"{gt['theta_left']:.1f}/{gt['theta_right']:.1f}, "
               f"base={gt['base_width_mm']:.2f} мм, h={gt['apex_height_mm']:.2f} мм")

@@ -326,17 +326,355 @@ def adsa_fit_surface_tension(m: CVMeasurement, fluid: Fluid, px_per_mm: float,
     return sigma
 
 
+
+# ===========================================================================
+# 7. Калибровка масштаба по линейке (шаг 1/64 дюйма)
+#    Линейка наклонена ~-28° в кадре; штрихи под ~+61°.
+#    Ищем период вдоль оси линейки через автокорреляцию проекций штрихов.
+# ===========================================================================
+RULER_STEP_MM = 25.4 / 64   # 1/64 дюйма (~0.397 мм)
+
+
+def calibrate_ruler(img_bgr, step_mm: float = RULER_STEP_MM,
+                    ruler_angle_deg: float = -28.0,
+                    debug_path: str | None = None):
+    """
+    Вычисляет px_per_mm по периоду штрихов линейки.
+    ruler_angle_deg — известный угол наклона оси линейки в кадре.
+    Возвращает (px_per_mm, period_px).
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+
+    # единичный вектор вдоль оси линейки
+    a = np.deg2rad(ruler_angle_deg)
+    d = np.array([np.cos(a), np.sin(a)])
+    n = np.array([-d[1], d[0]])   # перпендикуляр (вдоль штрихов)
+
+    # ROI — нижние 60% кадра (там линейка)
+    roi_y = int(h * 0.4)
+    gray_roi = gray[roi_y:, :]
+    edges = cv2.Canny(gray_roi, 20, 70)
+
+    # проецируем точки края на ось линейки
+    ys_idx, xs_idx = np.where(edges > 0)
+    if len(xs_idx) < 20:
+        raise RuntimeError("Слишком мало краёв в ROI")
+    pts = np.stack([xs_idx, ys_idx + roi_y], axis=1).astype(float)
+    origin = np.array([w / 2, h / 2], float)
+    s = (pts - origin) @ d   # координата вдоль линейки
+    t = (pts - origin) @ n   # поперёк (вдоль штрихов)
+
+    # отбираем точки в полосе ±band вдоль оси линейки (сама линейка ~300 px шириной)
+    band = 400
+    sel = np.abs(t) < band
+    if sel.sum() < 20:
+        raise RuntimeError("Точки внутри полосы линейки не найдены")
+    s_pts = s[sel]
+
+    # автокорреляция гистограммы вдоль s
+    s_min, s_max = s_pts.min(), s_pts.max()
+    n_bins = min(int(s_max - s_min) + 1, 4000)
+    hist, _ = np.histogram(s_pts, bins=n_bins, range=(s_min, s_max))
+    hist = hist.astype(float)
+    hist -= hist.mean()
+    acorr = np.correlate(hist, hist, mode="full")[len(hist) - 1:]
+    acorr[0] = 0
+
+    # первый значимый пик (период штриха: ожидаем 10–200 px)
+    peaks = [(acorr[i], i) for i in range(8, min(300, len(acorr) - 1))
+             if acorr[i] > acorr[i-1] and acorr[i] > acorr[i+1]]
+    if not peaks:
+        raise RuntimeError("Период штрихов не найден")
+    period_px = float(max(peaks, key=lambda x: x[0])[1])
+    px_per_mm = period_px / step_mm
+
+    if debug_path:
+        dbg = img_bgr.copy()
+        # рисуем ось линейки через центр
+        p1 = (origin + d * (-w * 0.6)).astype(int)
+        p2 = (origin + d * (w * 0.6)).astype(int)
+        cv2.line(dbg, tuple(p1), tuple(p2), (0, 255, 0), 3)
+        small = cv2.resize(dbg, (dbg.shape[1] // 4, dbg.shape[0] // 4))
+        cv2.imwrite(debug_path, small)
+
+    return px_per_mm, period_px
+
+
+# ===========================================================================
+# 8. Извлечение разметки из цветного фото (синяя линия + красный контур)
+# ===========================================================================
+
+def extract_colored_markup(img_bgr):
+    """
+    Извлекает из фото с ручной разметкой:
+      - синюю линию  -> базовая линия (поверхность зеркала)
+      - красную кривую -> профиль капли
+    Возвращает (baseline_pts, drop_pts) — массивы пикселей Nx2.
+    """
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+
+    # синий: H=100-130
+    blue_mask = cv2.inRange(hsv,
+                            np.array([95, 80, 80]),
+                            np.array([135, 255, 255]))
+    blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE,
+                                 np.ones((7, 7), np.uint8))
+
+    # красный: H=0-10 или 165-180
+    red_mask1 = cv2.inRange(hsv, np.array([0,  80, 80]), np.array([10,  255, 255]))
+    red_mask2 = cv2.inRange(hsv, np.array([160, 80, 80]), np.array([180, 255, 255]))
+    red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE,
+                                np.ones((7, 7), np.uint8))
+
+    def mask_to_pts(mask):
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return None
+        return np.stack([xs, ys], axis=1).astype(float)
+
+    blue_pts = mask_to_pts(blue_mask)
+    red_pts  = mask_to_pts(red_mask)
+    return blue_pts, red_pts
+
+
+def fit_baseline_from_pts(pts):
+    """Фитирует прямую по облаку точек (SVD). Возвращает (origin, direction, alpha_deg)."""
+    center = pts.mean(axis=0)
+    _, _, Vt = np.linalg.svd(pts - center)
+    d = Vt[0]
+    if d[0] < 0:
+        d = -d
+    alpha_deg = np.degrees(np.arctan2(d[1], d[0]))
+    return center, d, alpha_deg
+
+
+def measure_from_markup(img_bgr, px_per_mm: float):
+    """
+    Измерение краевых углов из ручной цветной разметки.
+    Синяя линия = поверхность зеркала.
+    Красная кривая = боковой профиль капли от одного контакта до другого:
+      - конец с меньшим t (ближе к поверхности) с меньшим s -> левый контакт
+      - конец с меньшим t с бОльшим s                       -> правый контакт
+      - точка с максимальным t                               -> вершина
+    Краевой угол вычисляется как касательная к кривой в конечных точках.
+    """
+    blue_pts, red_pts = extract_colored_markup(img_bgr)
+    if blue_pts is None or len(blue_pts) < 10:
+        raise RuntimeError("Синяя базовая линия не найдена")
+    if red_pts is None or len(red_pts) < 10:
+        raise RuntimeError("Красный контур капли не найден")
+
+    # базовая линия
+    origin, d, alpha_deg = fit_baseline_from_pts(blue_pts)
+    n = np.array([-d[1], d[0]])
+    # n смотрит в сторону капли: центр красных точек должен давать t > 0
+    if (red_pts.mean(axis=0) - origin) @ n < 0:
+        n = -n
+
+    # координаты красных точек в системе базовой линии
+    rel = red_pts - origin
+    s_all = rel @ d
+    t_all = rel @ n
+
+    # убираем точки ниже поверхности (шум разметки)
+    above = t_all > 2.0
+    s_all, t_all = s_all[above], t_all[above]
+    red_pts_above = red_pts[above]
+    if len(s_all) < 10:
+        raise RuntimeError("Недостаточно точек профиля над поверхностью")
+
+    # вершина — точка максимального удаления от поверхности
+    i_apex = np.argmax(t_all)
+    apex_height = t_all[i_apex]
+    apex_px = red_pts_above[i_apex]
+
+    # концы кривой — точки с малым t (у поверхности)
+    # сортируем по s: левый контакт (меньший s), правый (больший s)
+    t_thresh = min(0.15 * apex_height, 30.0)
+    near_surf = t_all < t_thresh
+    if near_surf.sum() < 4:
+        # запасной вариант: берём крайние точки по s
+        near_surf = t_all < (0.25 * apex_height)
+    s_near = s_all[near_surf]
+    s_left  = s_near.min()
+    s_right = s_near.max()
+    base_width = s_right - s_left
+
+    cl_px = origin + s_left  * d
+    cr_px = origin + s_right * d
+
+    # касательная в точке контакта: локальный полиномиальный фит
+    # используем точки в окрестности t < t_band и s близко к контакту
+    def _tangent_angle(s_contact, side):
+        w_s = max(0.35 * base_width, 20.0)
+        t_band = max(0.35 * apex_height, 15.0)
+        sel = (t_all > 1.0) & (t_all < t_band) & (np.abs(s_all - s_contact) < w_s)
+        if sel.sum() < 5:
+            # расширяем окно
+            sel = (t_all < t_band) & (np.abs(s_all - s_contact) < w_s * 2)
+        if sel.sum() < 4:
+            return np.nan
+        ss, tt = s_all[sel], t_all[sel]
+        # параметрический порядок вдоль кривой: сортируем по t
+        order = np.argsort(tt)
+        ss, tt = ss[order], tt[order]
+        # фитируем s(t): квадратика, ds/dt при t=0 = coeffs[1]
+        if len(tt) >= 3:
+            coeffs = np.polyfit(tt, ss, 2)
+            ds_dt = coeffs[1]
+        else:
+            ds_dt = (ss[-1] - ss[0]) / max(tt[-1] - tt[0], 1e-6)
+        # краевой угол = угол между касательной к профилю и поверхностью
+        # касательный вектор (в системе s,t): (ds_dt, 1), нормированный
+        # угол с осью s (поверхностью): arctan(1 / |ds_dt|)
+        # для левого контакта профиль идёт вправо-вверх (ds_dt > 0 -> угол острый)
+        # для правого — влево-вверх (ds_dt < 0 -> угол острый с другой стороны)
+        theta = np.degrees(np.arctan2(1.0, abs(ds_dt)))
+        return float(theta)
+
+    theta_left  = _tangent_angle(s_left,  "left")
+    theta_right = _tangent_angle(s_right, "right")
+
+    m = CVMeasurement(
+        alpha_deg=alpha_deg,
+        theta_left_deg=theta_left,
+        theta_right_deg=theta_right,
+        base_width_px=base_width,
+        apex_height_px=apex_height,
+        contact_left_px=tuple(cl_px),
+        contact_right_px=tuple(cr_px),
+        apex_px=tuple(apex_px),
+    )
+    if px_per_mm:
+        m.base_width_mm  = base_width  / px_per_mm
+        m.apex_height_mm = apex_height / px_per_mm
+
+    m.extras.update(
+        origin=origin, d=d, n=n,
+        contour=np.stack([s_all, t_all], axis=1),
+        s=s_all, t=t_all, px_per_mm=px_per_mm,
+        tangent_left=None, tangent_right=None,
+        ellipse=None, s_left=s_left, s_right=s_right,
+        contour_px=red_pts_above,
+    )
+    return m
+
+
 if __name__ == "__main__":
-    from synthetic import render_drop
-    img, gt = render_drop(alpha_deg=0.0, volume=45e-9, theta_deg=112.0, px_per_mm=60.0)
-    m = measure(img, px_per_mm=gt["px_per_mm"])
-    print("=== Горизонтальная капля ===")
-    print(f"  GT:  theta={gt['theta_left']:.1f}°, base={gt['base_width_mm']:.2f} мм, h={gt['apex_height_mm']:.2f} мм")
-    print(f"  CV:  theta L/R={m.theta_left_deg:.1f}/{m.theta_right_deg:.1f}°, "
-          f"base={m.base_width_mm:.2f} мм, h={m.apex_height_mm:.2f} мм, alpha={m.alpha_deg:.1f}°")
-    sigma = adsa_fit_surface_tension(m, WATER, gt["px_per_mm"], theta_guess_deg=112.0)
-    print(f"  ADSA sigma={sigma*1e3:.1f} мН/м (истинное {WATER.sigma*1e3:.1f}), "
-          f"a={m.extras['adsa']['a_mm']:.2f} мм")
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    _out = os.path.join(_dir, "out")
+    os.makedirs(_out, exist_ok=True)
+
+    img_path = os.path.join(_dir, "exp_data.jpg")
+    if not os.path.exists(img_path):
+        print("exp_data.jpg не найден, запускаем на синтетике")
+        sys.path.insert(0, _dir)
+        from synthetic import render_drop
+        img, gt = render_drop(alpha_deg=0.0, volume=45e-9, theta_deg=112.0, px_per_mm=60.0)
+        px_per_mm = gt["px_per_mm"]
+        m = measure(img, px_per_mm=px_per_mm)
+        print(f"GT theta={gt['theta_left']:.1f}, CV L/R={m.theta_left_deg:.1f}/{m.theta_right_deg:.1f}")
+        sys.exit(0)
+
+    # загрузка (cv2 не любит кириллицу в пути)
+    buf = np.fromfile(img_path, dtype=np.uint8)
+    img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if img is None:
+        raise RuntimeError("Не удалось загрузить exp_data.jpg")
+    print(f"Загружен снимок: {img.shape[1]}x{img.shape[0]} px")
+
+    # --- калибровка по линейке ---
+    # линейка наклонена на -28 deg (определено ранее из Хафа)
+    try:
+        px_per_mm, period_px = calibrate_ruler(
+            img,
+            step_mm=RULER_STEP_MM,
+            ruler_angle_deg=-28.0,
+            debug_path=os.path.join(_out, "ruler_debug.png"),
+        )
+        print(f"Калибровка: период={period_px:.1f} px, px/mm={px_per_mm:.2f}")
+    except RuntimeError as e:
+        print(f"  WARN: Калибровка не удалась: {e}, используем px/mm=60")
+        px_per_mm = 60.0
+
+    # --- измерение по цветной разметке ---
+    try:
+        m = measure_from_markup(img, px_per_mm=px_per_mm)
+    except RuntimeError as e:
+        print(f"  Разметка не найдена ({e}), пробуем автодетекцию")
+        m = measure(img, px_per_mm=px_per_mm)
+
+    # физический угол наклона зеркала: камера вертикальна над зеркалом,
+    # синяя линия на экране даёт alpha_screen, реальный наклон = 90 - alpha_screen
+    alpha_phys = 90.0 - abs(m.alpha_deg)
+
+    print(f"\nРезультат:")
+    print(f"  alpha_screen = {m.alpha_deg:.1f} grad (угол синей линии на экране)")
+    print(f"  alpha_phys   = {alpha_phys:.1f} grad (физический наклон зеркала)")
+    print(f"  theta_L      = {m.theta_left_deg:.1f} grad")
+    print(f"  theta_R      = {m.theta_right_deg:.1f} grad")
+    print(f"  основание    = {m.base_width_mm:.2f} мм")
+    print(f"  высота       = {m.apex_height_mm:.2f} мм")
+
+    # --- сохраняем числа в машиночитаемый JSON для simulate.py ---
+    import json
+    result_json = {
+        "source":          "exp_data.jpg",
+        "px_per_mm":       round(float(px_per_mm), 3),
+        "alpha_screen_deg": round(float(m.alpha_deg), 2),
+        "alpha_phys_deg":  round(float(alpha_phys), 2),
+        "theta_L_deg":     round(float(m.theta_left_deg), 2),
+        "theta_R_deg":     round(float(m.theta_right_deg), 2),
+        "base_width_mm":   round(float(m.base_width_mm), 3),
+        "apex_height_mm":  round(float(m.apex_height_mm), 3),
+    }
+    json_path = os.path.join(_out, "cv_result.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(result_json, f, ensure_ascii=False, indent=2)
+    print(f"\nЧисла сохранены: {json_path}")
+
+    # визуализация поверх оригинала
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 10))
+    ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    # синяя базовая линия
+    blue_pts, red_pts = extract_colored_markup(img)
+    if blue_pts is not None:
+        ax.scatter(blue_pts[:, 0], blue_pts[:, 1], s=0.5, c="cyan", alpha=0.5,
+                   label="базовая линия")
+    if red_pts is not None:
+        ax.scatter(red_pts[:, 0], red_pts[:, 1], s=0.5, c="red", alpha=0.5,
+                   label="профиль капли")
+
+    cl = np.array(m.contact_left_px)
+    cr = np.array(m.contact_right_px)
+    ax.plot(*cl, "o", color="yellow", ms=10, label="контакт")
+    ax.plot(*cr, "o", color="yellow", ms=10)
+    ax.plot(*np.array(m.apex_px), "s", color="lime", ms=10, label="вершина")
+
+    info = (f"alpha={m.alpha_deg:.1f} grad\n"
+            f"theta_L={m.theta_left_deg:.1f} grad\n"
+            f"theta_R={m.theta_right_deg:.1f} grad\n"
+            f"base={m.base_width_mm:.2f} mm\n"
+            f"h={m.apex_height_mm:.2f} mm\n"
+            f"px/mm={px_per_mm:.1f}")
+    ax.text(0.02, 0.98, info, transform=ax.transAxes, va="top",
+            fontsize=11, family="monospace",
+            bbox=dict(fc="black", ec="gray", alpha=0.6), color="white")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.set_title("exp_data.jpg — измерение краевых углов")
+    ax.set_xticks([]); ax.set_yticks([])
+
+    vis_path = os.path.join(_out, "exp_result.png")
+    fig.savefig(vis_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"\nСохранено: {vis_path}")
 
 
 # ===========================================================================

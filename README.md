@@ -2,10 +2,11 @@
 
 Исследование равновесной формы сидящей (sessile) капли в зависимости от угла
 наклона поверхности, поверхностного натяжения и условия начала соскальзывания.
-Три артефакта в порядке приоритета:
-1. **Статья** — LaTeX-статья журнального уровня (`article/main.tex`)
-2. **Симуляция** — расчёт формы и параметрическое CLI (`sim/`)
-3. **CV-анализ** — компьютерное зрение для снимков капли (`exp/`)
+
+Три артефакта:
+1. **Статья** — LaTeX-статья (`article/main.tex`)
+2. **Симуляция** — физическая модель и 3D-рендер (`sim/`)
+3. **CV-анализ** — обработка реального снимка (`exp/`)
 
 ---
 
@@ -14,24 +15,32 @@
 ```
 phys_2_sem/
 ├── sim/
-│   ├── physics.py        — физические константы; класс Fluid, жидкости
+│   ├── physics.py        — физические константы; класс Fluid, жидкости (WATER, GLYCERIN, ...)
 │   ├── drop_2d.py        — 2D капля на горизонтали (точное + дуговое решение)
-│   ├── drop_axisym.py    — 3D осесимметрия (Башфорт–Адамс, объём)
+│   ├── drop_axisym.py    — 3D осесимметрия (Башфорт-Адамс, объём)
 │   ├── inclined.py       — наклон (Фурмидж, гистерезис, метод двух окружностей)
-│   ├── simulate.py       — параметрическое CLI + API run_simulation()
-│   ├── render3d.py       — 3D-рендер поверхности капли (matplotlib)
-│   └── synthetic.py      — генератор синтетических снимков из физ. модели
+│   ├── render3d.py       — 3D-рендер поверхности капли (API, вызывается из simulate)
+│   └── figures.py        — генерация 8 рисунков статьи -> figs/
 ├── exp/
-│   └── dropcv.py         — CV-конвейер: контур, базовая линия, углы, ADSA
-├── figs/                 — 8 рисунков статьи (PDF + PNG)
+│   ├── exp_data.jpg      — реальный снимок капли (с синей/красной разметкой)
+│   ├── dropcv.py         — CV-обработка снимка: калибровка, углы, геометрия, ADSA
+│   ├── simulate.py       — симуляция + сравнение CV с теорией
+│   │                       без аргументов = авто-режим (cv_result.json → PDFs)
+│   │                       --cv ручной ввод, --volume/--theta/--alpha параметрический
+│   │                       (run_simulation, plot_sideview; sim/simulate.py удалён)
+│   ├── synthetic.py      — генератор асимметричных синтетических снимков из физ. модели
+│   │                       (theta_deg=0 -> вода 72.8 градуса)
+│   └── out/              — результаты: exp_result.png, cv_result.json
+├── figs/                 — рисунки (PDF+PNG): 8 статейных (figures.py) +
+│                           comparison.pdf, drop_result.pdf, cv_theory_sideview.pdf, drop_3d.pdf
 ├── article/
-│   ├── figures.py        — генерация 8 рисунков статьи → figs/
+│   ├── figures.py        — копия генератора рисунков (запуск из article/)
 │   ├── figs/             — копии рисунков для LaTeX \includegraphics
 │   ├── main.tex          — исходник статьи (xelatex)
-│   └── main.pdf          — скомпилированный PDF (20 стр., 37 уравнений, 11 рис.)
-├── literature/           — ключевые статьи (Rotenberg 1983, ElSherbini 2004 и др.)
-├── run_cv.py             — раннер CV (обрабатывает горизонтальный и наклонный снимки)
-└── figures.py            — alias / копия для генерации рисунков из корня
+│   └── main.pdf          — скомпилированный PDF
+├── literature/           — ключевые статьи (Rotenberg 1983, ElSherbini 2004, ...)
+├── run_cv.py             — валидация CV-конвейера на синтетических снимках (GT vs CV)
+└── CLAUDE.md             — контекст и инструкции для Claude Code
 ```
 
 ---
@@ -40,113 +49,122 @@ phys_2_sem/
 
 | Задача | Метод | Файл |
 |--------|-------|------|
-| 2D горизонталь | Точное решение первого интеграла + дуговой ОДУ | `sim/drop_2d.py` |
-| 3D горизонталь | Уравнение Башфорта–Адамса (осесимметрия) | `sim/drop_axisym.py` |
-| Критерий соскальзывания | Критерий Фурмиджа: ρgV sinα = kw σ(cosθR − cosθA) | `sim/inclined.py` |
+| 2D горизонталь | Точное решение + дуговой ОДУ | `sim/drop_2d.py` |
+| 3D горизонталь | Уравнение Башфорта-Адамса (осесимметрия) | `sim/drop_axisym.py` |
+| Критерий соскальзывания | Фурмидж: ρgV sinα = kw σ(cosθR - cosθA) | `sim/inclined.py` |
 | Форма на наклоне | Метод двух окружностей (ElSherbini 2004) | `sim/inclined.py` |
-| Краевой угол по периметру | Кубическая аппроксимация θ(ψ) | `sim/inclined.py` |
-| CV-измерение | Локальный фит окружности у каждого контакта | `exp/dropcv.py` |
-| Поверхностное натяжение | ADSA (подгонка Юнга–Лапласа к контуру) | `exp/dropcv.py` |
+| θ(ψ) по периметру | Кубическая аппроксимация | `sim/inclined.py` |
+| CV-измерение | Фит окружности у точек контакта | `exp/dropcv.py` |
+| Поверхностное натяжение | ADSA (подгонка Юнга-Лапласа к контуру) | `exp/dropcv.py` |
 
-Капиллярная длина **a = √(σ / Δρg)**; число Бонда **Bo = (L/a)²**.
-Уравнение Юнга–Лапласа в дуговой параметризации:
+Уравнение Юнга-Лапласа в дуговой параметризации:
 - 2D: `dφ/ds = b + c·z`
-- 3D (осесимм.): `dφ/ds = 2b + c·z − sinφ/x`
+- 3D (осесимм.): `dφ/ds = 2b + c·z - sinφ/x`
 
 ---
 
-## Быстрый старт
+## Пайплайн: от фото до сравнения с теорией
+
+```
+exp/exp_data.jpg  (снимок с синей линией поверхности + красным профилем капли)
+        |
+        v  cd exp && py dropcv.py
+   exp/out/cv_result.json: theta_L, theta_R, alpha_phys, base_mm, h_mm, px_per_mm
+        |
+        v  cd exp && py simulate.py          (авто-режим, без ввода)
+   figs/comparison.pdf  — таблица CV vs теория + наложенные профили
+   figs/drop_result.pdf — CV-профиль из измеренных углов
+```
+
+**Результаты по снимку exp_data.jpg** (1 точка данных):
+
+| Параметр    | CV (снимок) | Теория (YL) | delta  |
+|-------------|-------------|-------------|--------|
+| theta_A     | 37.7 grad   | 37.5 grad   | +0.5%  |
+| theta_R     | 23.6 grad   | 23.8 grad   | -0.7%  |
+| base_width  | 6.16 mm     | 6.77 mm     | -9.1%  |
+| apex_height | 0.73 mm     | 0.88 mm     | -16.9% |
+
+### Шаг 1 — CV-обработка реального снимка
+
+Снимок должен содержать ручную разметку:
+- **синяя линия** — поверхность зеркала (базовая линия)
+- **красная кривая** — боковой профиль капли
 
 ```bash
-# 1. Проверить импорты sim-модулей
-cd sim && python3 -c "import physics,drop_2d,drop_axisym,inclined,simulate; print('OK')"
+cd exp
+py dropcv.py
+# -> exp/out/exp_result.png (визуализация) + exp/out/cv_result.json (числа)
+```
 
-# 2. Симуляция — горизонтальная капля
-python3 simulate.py --volume 30 --alpha 0 --theta 100 --save /tmp/drop.pdf
+Калибровка масштаба — автоматически по линейке (шаг 1/64 дюйма = 0.397 мм).
 
-# 3. Симуляция — наклонная капля с 3D-рендером
-python3 simulate.py --volume 30 --alpha 35 --theta 100 --3d --save /tmp/drop3d.pdf
+### Шаг 2 — Сравнение с теорией (авто, без ввода)
 
-# 4. Проверка ошибки соскальзывания
-python3 simulate.py --volume 200 --alpha 60 --theta 100
-# → DropSlidesError с критическим углом
+```bash
+cd exp
+py simulate.py
+# -> figs/comparison.pdf   (таблица CV vs теория + наложенные профили)
+# -> figs/drop_result.pdf  (CV-профиль)
+```
 
-# 5. Перегенерировать рисунки статьи
-python3 figures.py && cp ../figs/*.pdf ../article/figs/
+### Шаг 3 — 3D-рендер
 
-# 6. Запустить CV-конвейер
-cd .. && python3 run_cv.py
+```bash
+cd sim
+py render3d.py
+# интерактивный ввод: V (мкл) и alpha (°); theta_Y=72.8° фиксирован (вода/стекло)
+# -> figs/drop_3d.pdf
+```
 
-# 7. Скомпилировать статью (дважды — для ссылок)
-cd article && xelatex -interaction=nonstopmode main.tex && xelatex -interaction=nonstopmode main.tex
+### Шаг 4 — Рисунки статьи
+
+```bash
+cd sim
+py figures.py
+cp ../figs/*.pdf ../article/figs/
+cd ../article
+xelatex -interaction=nonstopmode main.tex && xelatex -interaction=nonstopmode main.tex
 ```
 
 ---
 
-## CLI simulate.py
+## Валидация CV на синтетике
 
-```
-python3 simulate.py --volume V --theta θ [--alpha α] [--fluid ЖИДКОСТЬ] [--width ш] [--3d] [--save файл]
+`run_cv.py` проверяет CV-конвейер на синтетических снимках с известными параметрами:
 
-Аргументы:
-  --volume   объём капли, мкл (обязательно)
-  --theta    равновесный краевой угол, ° (обязательно)
-  --alpha    угол наклона поверхности, ° (по умолч. 0)
-  --fluid    жидкость: water | glycerin | ethylene_glycol | mercury (по умолч. water)
-  --width    ширина контактного пятна поперёк склона, мм (по умолч. авто)
-  --3d       добавить 3D-рендер поверхности
-  --save     путь к выходному PDF
+```bash
+py run_cv.py
+# -> таблица GT (модель) vs CV (измерение) для горизонтальной и наклонной капель
 ```
 
-Скрипт выполняет физическую валидацию и выдаёт информативную ошибку:
-- `VolumeError`     — объём вне [0.01, 10000] мкл
-- `AngleError`      — угол наклона вне [0°, 90°) или краевой угол вне (1°, 179°)
-- `DropSlidesError` — капля соскальзывает; сообщается V_max и критический угол α_c
-
----
-
-## API Python
-
-```python
-from sim.simulate import run_simulation
-from sim.physics import WATER
-
-result = run_simulation(volume_ul=30, alpha_deg=35, theta_deg=100, fluid=WATER)
-print(result["geometry"])   # словарь с base_width_mm, apex_height_mm, Bo и др.
-
-# 3D-рендер
-from sim.render3d import render_and_save
-render_and_save(result, path="/tmp/drop_3d.pdf", view="iso")
-```
-
----
-
-## Провалидированные числа
+Провалидированные числа:
 
 | Проверка | Расхождение |
 |----------|------------|
 | Точное 2D vs дуговое (площадь) | 0.000 % |
 | Осесимм. 3D vs сферическая шапка (без гравитации) | 0.04 % |
-| Метод двух окружностей — вырожд. случай vs шапка | 0.000 % |
-| CV краевой угол ошибка до θ ≈ 115° | < 2° |
-| CV восстановление σ воды (ADSA) | 72.8 мН/м (точно) |
+| Метод двух окружностей — вырожд. случай | 0.000 % |
+| CV краевой угол (θ < 115°) | < 2° |
+| CV восстановление σ воды (ADSA) | 72.8 мН/м |
 
 ---
 
-## Зависимости
+## Особенности окружения
 
-Python 3.11+, numpy ≥ 2.4, scipy ≥ 1.17, matplotlib ≥ 3.10, opencv-python ≥ 4.13.
-
-Статья компилируется только через **xelatex** (pdflatex не работает: T2A кодировка отсутствует).
-Шрифты: DejaVu Serif/Sans/Mono (есть кириллица — для matplotlib и LaTeX).
+- Python: **3.10** (`py` launcher на Windows). Вызывать как `py`, не `python3`.
+- `cv2.imread` не поддерживает кириллицу в пути — используем `np.fromfile` + `cv2.imdecode`.
+- `cv2.imwrite` аналогично — используем `cv2.imencode(...)[1].tofile(path)`.
+- LaTeX: только **xelatex** (`pdflatex` не работает: T2A кодировка отсутствует).
+- Шрифты: DejaVu Sans/Serif/Mono — кириллица в matplotlib и LaTeX.
 
 ---
 
 ## Ключевые источники
 
-- Bashforth & Adams (1883) — дуговая параметризация профиля
-- Frenkel (1948), Furmidge (1962) — критерий соскальзывания
-- Rotenberg, Boruvka & Neumann (1983) — метод ADSA
+- Bashforth & Adams (1883) — дуговая параметризация
+- Furmidge (1962) — критерий соскальзывания
+- Rotenberg, Boruvka & Neumann (1983) — ADSA
 - ElSherbini & Jacobi (2004) — метод двух окружностей, кубика θ(ψ)
 - Lv et al. (2017), arXiv:1705.03548 — точные 2D-решения
-- Матюхин & Фроленков (2013) — вариационный вывод, насыщение высоты h*
+- Матюхин & Фроленков (2013) — вариационный вывод, насыщение h*

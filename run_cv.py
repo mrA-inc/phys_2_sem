@@ -15,7 +15,7 @@ from synthetic import render_drop
 from dropcv import measure, adsa_fit_surface_tension, visualize_measurement
 from physics import WATER
 
-OUT = "/home/claude/droplet/cv/out"
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exp", "out")
 os.makedirs(OUT, exist_ok=True)
 
 

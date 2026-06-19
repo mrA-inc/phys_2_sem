@@ -24,7 +24,7 @@ from inclined import (contact_angle_azimuthal, two_circle_volume,
                       spherical_cap_volume_equal, sliding_angle_2d, max_volume_3d,
                       hysteresis_symmetric, two_arc_profile_2d)
 
-FIGDIR = "/home/claude/droplet/figs"
+FIGDIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "figs")
 os.makedirs(FIGDIR, exist_ok=True)
 
 # --- единый стиль ---

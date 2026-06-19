@@ -1,0 +1,10 @@
+{
+  "source": "exp_data.jpg",
+  "px_per_mm": 83.15,
+  "alpha_screen_deg": 59.74,
+  "alpha_phys_deg": 30.26,
+  "theta_L_deg": 23.63,
+  "theta_R_deg": 37.71,
+  "base_width_mm": 6.155,
+  "apex_height_mm": 0.732
+}
